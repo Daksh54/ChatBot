@@ -1,23 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: backend
+  name: worker
   namespace: nexusrag
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: backend
+      app: worker
   template:
     metadata:
       labels:
-        app: backend
+        app: worker
     spec:
       containers:
-        - name: backend
+        - name: worker
           image: nexusrag/backend:latest
-          ports:
-            - containerPort: 8000
+          command: ["rq", "worker", "document_ingestion", "--url", "redis://redis:6379/0"]
           volumeMounts:
             - name: uploads-shared
               mountPath: /app/storage/uploads
@@ -36,26 +35,7 @@ spec:
               value: document_ingestion
             - name: FILE_STORAGE_DIR
               value: storage/uploads
-            - name: FRONTEND_ORIGIN
-              value: http://frontend
-            - name: GROQ_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: nexusrag-secrets
-                  key: groq-api-key
       volumes:
         - name: uploads-shared
           persistentVolumeClaim:
             claimName: uploads-shared-pvc
----        
-apiVersion: v1
-kind: Service
-metadata:
-  name: backend
-  namespace: nexusrag
-spec:
-  selector:
-    app: backend
-  ports:
-    - port: 8000
-      targetPort: 8000

@@ -1,75 +1,59 @@
 # Author: Daksh Sharma 26434
 
-import hashlib
-import io
 import json
-import os
-import re
+import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 import numpy as np
-import pandas as pd
-import pdfplumber
-import pytesseract
 from bson import ObjectId
-from docx import Document
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-from PIL import Image
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient, models
 from rank_bm25 import BM25Okapi
+from redis import Redis
+from rq import Queue
 
-
-APP_NAME = "NexusRAG"
-APP_VERSION = "1.0.0"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-EMBED_MODEL_NAME = os.getenv(
-    "EMBED_MODEL_NAME",
-    "sentence-transformers/all-MiniLM-L6-v2",
+from jobs import process_document_task
+from services import (
+    embed_texts,
+    ensure_qdrant_collection,
+    get_reranker,
+    sanitize_filename,
+    utc_now,
 )
-RERANK_MODEL_NAME = os.getenv(
-    "RERANK_MODEL_NAME",
-    "cross-encoder/ms-marco-MiniLM-L-6-v2",
+from settings import (
+    APP_NAME,
+    APP_VERSION,
+    CHAT_HISTORY_TURNS,
+    DEFAULT_TOP_K,
+    DEFAULT_WORKSPACE_NAME,
+    FILE_STORAGE_DIR,
+    FRONTEND_ORIGIN,
+    GROQ_API_KEY,
+    GROQ_MODEL,
+    MAX_CONTEXT_CHARS,
+    MONGODB_DB,
+    MONGODB_URI,
+    QDRANT_COLLECTION,
+    QDRANT_URL,
+    REDIS_URL,
+    TASK_QUEUE_NAME,
 )
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://mongodb:27017")
-MONGODB_DB = os.getenv("MONGODB_DB", "nexusrag")
-QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "workspace_chunks")
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-FILE_STORAGE_DIR = Path(os.getenv("FILE_STORAGE_DIR", "storage/uploads"))
-DEFAULT_WORKSPACE_NAME = "Flagship Workspace"
-DEFAULT_TOP_K = 6
-MAX_CONTEXT_CHARS = 14000
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 
 
 app_state: Dict[str, Any] = {
     "mongo_client": None,
     "database": None,
     "qdrant": None,
+    "redis": None,
+    "queue": None,
 }
-
-
-@dataclass
-class SourcePage:
-    page_number: int
-    text: str
-
-
-@dataclass
-class ChunkPayload:
-    text: str
-    page_start: int
-    page_end: int
 
 
 class WorkspaceCreate(BaseModel):
@@ -83,200 +67,32 @@ class ChatRequest(BaseModel):
     document_id: Optional[str] = None
 
 
-def utc_now() -> datetime:
-    return datetime.utcnow()
-
-
-def normalize_text(value: str) -> str:
-    text = re.sub(r"[\x00-\x1F\x7F-\x9F]", " ", value or "")
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def sanitize_filename(filename: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", filename).strip("-")
-    return cleaned or "upload"
-
-
 def object_id(value: str, field_name: str) -> ObjectId:
     if not ObjectId.is_valid(value):
         raise HTTPException(status_code=400, detail=f"Invalid {field_name}.")
     return ObjectId(value)
 
 
-def serialize_id(document: Dict[str, Any]) -> Dict[str, Any]:
-    output = dict(document)
-    if "_id" in output:
-        output["id"] = str(output.pop("_id"))
-    if "workspace_id" in output and isinstance(output["workspace_id"], ObjectId):
-        output["workspace_id"] = str(output["workspace_id"])
-    if "document_id" in output and isinstance(output["document_id"], ObjectId):
-        output["document_id"] = str(output["document_id"])
+def serialize_value(value: Any) -> Any:
+    if isinstance(value, ObjectId):
+        return str(value)
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [serialize_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: serialize_value(item) for key, item in value.items()}
+    return value
+
+
+def serialize_document(document: Dict[str, Any]) -> Dict[str, Any]:
+    output = {}
+    for key, value in document.items():
+        if key == "_id":
+            output["id"] = str(value)
+        else:
+            output[key] = serialize_value(value)
     return output
-
-
-def compute_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def get_embedder():
-    from sentence_transformers import SentenceTransformer
-
-    if "embedder" not in app_state:
-        app_state["embedder"] = SentenceTransformer(EMBED_MODEL_NAME)
-    return app_state["embedder"]
-
-
-def get_reranker():
-    from sentence_transformers import CrossEncoder
-
-    if "reranker" not in app_state:
-        try:
-            app_state["reranker"] = CrossEncoder(RERANK_MODEL_NAME)
-        except Exception:
-            app_state["reranker"] = None
-    return app_state["reranker"]
-
-
-def embed_texts(texts: List[str]) -> np.ndarray:
-    if not texts:
-        return np.zeros((0, 384), dtype="float32")
-    vectors = get_embedder().encode(
-        texts,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-        show_progress_bar=False,
-    )
-    return vectors.astype("float32")
-
-
-def split_sentences(text: str) -> List[str]:
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    return [normalize_text(sentence) for sentence in sentences if normalize_text(sentence)]
-
-
-def build_semantic_chunks(
-    pages: List[SourcePage],
-    max_words: int = 240,
-    overlap_words: int = 50,
-) -> List[ChunkPayload]:
-    chunks: List[ChunkPayload] = []
-    buffer: List[str] = []
-    buffer_pages: List[int] = []
-    word_count = 0
-
-    for page in pages:
-        for sentence in split_sentences(page.text):
-            sentence_words = sentence.split()
-            if not sentence_words:
-                continue
-            if buffer and word_count + len(sentence_words) > max_words:
-                combined = " ".join(buffer).strip()
-                chunks.append(
-                    ChunkPayload(
-                        text=combined,
-                        page_start=min(buffer_pages),
-                        page_end=max(buffer_pages),
-                    )
-                )
-                overlap = combined.split()[-overlap_words:]
-                buffer = [" ".join(overlap)] if overlap else []
-                buffer_pages = [buffer_pages[-1]] if buffer_pages else []
-                word_count = len(overlap)
-            buffer.append(sentence)
-            buffer_pages.append(page.page_number)
-            word_count += len(sentence_words)
-
-    if buffer:
-        chunks.append(
-            ChunkPayload(
-                text=" ".join(buffer).strip(),
-                page_start=min(buffer_pages),
-                page_end=max(buffer_pages),
-            )
-        )
-
-    return [chunk for chunk in chunks if chunk.text]
-
-
-def extract_structured_dataframe(file_name: str, payload: bytes) -> pd.DataFrame:
-    suffix = Path(file_name).suffix.lower()
-    if suffix == ".csv":
-        return pd.read_csv(io.BytesIO(payload))
-    if suffix in {".xlsx", ".xls"}:
-        return pd.read_excel(io.BytesIO(payload))
-    raise HTTPException(status_code=400, detail="Unsupported structured file.")
-
-
-def dataframe_to_context(frame: pd.DataFrame) -> List[SourcePage]:
-    head_markdown = frame.head(12).to_markdown(index=False)
-    numeric_summary = ""
-    numeric = frame.select_dtypes(include=["number"])
-    if not numeric.empty:
-        numeric_summary = numeric.describe().round(2).to_markdown()
-
-    text = (
-        "Structured dataset preview:\n"
-        f"{head_markdown}\n\n"
-        f"Columns: {', '.join(frame.columns.astype(str).tolist())}\n\n"
-    )
-    if numeric_summary:
-        text += f"Numeric summary:\n{numeric_summary}\n"
-    return [SourcePage(page_number=1, text=text)]
-
-
-def extract_pages_from_upload(file_name: str, content_type: str, payload: bytes) -> List[SourcePage]:
-    try:
-        if content_type == "application/pdf" or file_name.lower().endswith(".pdf"):
-            pages: List[SourcePage] = []
-            with pdfplumber.open(io.BytesIO(payload)) as pdf:
-                for index, page in enumerate(pdf.pages, start=1):
-                    text = page.extract_text() or ""
-                    if not normalize_text(text):
-                        image = page.to_image(resolution=200).original
-                        text = pytesseract.image_to_string(image)
-                    pages.append(SourcePage(page_number=index, text=normalize_text(text)))
-            return [page for page in pages if page.text]
-
-        if content_type.startswith("image/"):
-            image = Image.open(io.BytesIO(payload))
-            text = pytesseract.image_to_string(image)
-            return [SourcePage(page_number=1, text=normalize_text(text))]
-
-        if content_type == "text/plain" or file_name.lower().endswith(".txt"):
-            return [SourcePage(page_number=1, text=normalize_text(payload.decode("utf-8")))]
-
-        if file_name.lower().endswith(".docx"):
-            document = Document(io.BytesIO(payload))
-            paragraphs = "\n".join(paragraph.text for paragraph in document.paragraphs)
-            return [SourcePage(page_number=1, text=normalize_text(paragraphs))]
-
-        if file_name.lower().endswith((".csv", ".xlsx", ".xls")):
-            dataframe = extract_structured_dataframe(file_name, payload)
-            return dataframe_to_context(dataframe)
-
-        raise HTTPException(status_code=400, detail="Unsupported file type.")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"File processing failed: {exc}") from exc
-
-
-async def ensure_qdrant_collection() -> None:
-    qdrant: QdrantClient = app_state["qdrant"]
-    collections = qdrant.get_collections().collections
-    existing = {collection.name for collection in collections}
-    if QDRANT_COLLECTION in existing:
-        return
-
-    sample_vector_size = embed_texts(["NexusRAG bootstrap"]).shape[1]
-    qdrant.create_collection(
-        collection_name=QDRANT_COLLECTION,
-        vectors_config=models.VectorParams(
-            size=sample_vector_size,
-            distance=models.Distance.COSINE,
-        ),
-    )
 
 
 async def get_database() -> AsyncIOMotorDatabase:
@@ -284,6 +100,13 @@ async def get_database() -> AsyncIOMotorDatabase:
     if database is None:
         raise HTTPException(status_code=500, detail="Database connection not initialized.")
     return database
+
+
+def get_queue() -> Queue:
+    queue = app_state.get("queue")
+    if queue is None:
+        raise HTTPException(status_code=500, detail="Task queue not initialized.")
+    return queue
 
 
 async def get_or_create_workspace(
@@ -299,7 +122,7 @@ async def get_or_create_workspace(
             raise HTTPException(status_code=404, detail="Workspace not found.")
         return workspace
 
-    target_name = normalize_text(workspace_name or DEFAULT_WORKSPACE_NAME)
+    target_name = (workspace_name or DEFAULT_WORKSPACE_NAME).strip()
     workspace = await workspaces.find_one({"name": target_name})
     if workspace:
         return workspace
@@ -315,50 +138,88 @@ async def get_or_create_workspace(
     return payload
 
 
-async def store_document_chunks(
+def build_context(candidates: List[Dict[str, Any]]) -> str:
+    sections: List[str] = []
+    total_chars = 0
+    for index, candidate in enumerate(candidates, start=1):
+        section = (
+            f"[Source {index} | pages {candidate['page_start']}-{candidate['page_end']}]\n"
+            f"{candidate['text']}"
+        )
+        if total_chars + len(section) > MAX_CONTEXT_CHARS:
+            break
+        sections.append(section)
+        total_chars += len(section)
+    return "\n\n".join(sections)
+
+
+def build_system_prompt(context: str) -> str:
+    return (
+        "You are NexusRAG, an expert research copilot. "
+        "Maintain conversational continuity using the prior chat history. "
+        "When retrieved context is supplied, ground your answer in that evidence and cite it inline as [Source n]. "
+        "If the context is incomplete, say so clearly instead of inventing details. "
+        "Use markdown when it improves readability.\n\n"
+        f"Retrieved Context:\n{context or 'No retrieved context supplied.'}"
+    )
+
+
+async def get_recent_history_messages(
     database: AsyncIOMotorDatabase,
-    workspace_id: ObjectId,
-    document_id: ObjectId,
-    chunks: List[ChunkPayload],
-) -> None:
-    chunk_records = []
-    for index, chunk in enumerate(chunks):
-        chunk_records.append(
-            {
-                "workspace_id": workspace_id,
-                "document_id": document_id,
-                "chunk_index": index,
-                "text": chunk.text,
-                "page_start": chunk.page_start,
-                "page_end": chunk.page_end,
-                "created_at": utc_now(),
-            }
-        )
+    workspace_id: str,
+    document_id: Optional[str],
+    limit: int = CHAT_HISTORY_TURNS,
+) -> List[Dict[str, str]]:
+    query: Dict[str, Any] = {"workspace_id": object_id(workspace_id, "workspace_id")}
+    if document_id:
+        query["$or"] = [
+            {"document_id": object_id(document_id, "document_id")},
+            {"document_id": None},
+        ]
 
-    if chunk_records:
-        await database["chunks"].insert_many(chunk_records)
+    records = await database["messages"].find(query).sort("created_at", -1).limit(limit).to_list(length=limit)
+    records.reverse()
 
-    qdrant: QdrantClient = app_state["qdrant"]
-    embeddings = embed_texts([chunk.text for chunk in chunks])
-    points = []
-    for index, chunk in enumerate(chunks):
-        points.append(
-            models.PointStruct(
-                id=str(document_id) + f"-{index}",
-                vector=embeddings[index].tolist(),
-                payload={
-                    "workspace_id": str(workspace_id),
-                    "document_id": str(document_id),
-                    "chunk_index": index,
-                    "text": chunk.text,
-                    "page_start": chunk.page_start,
-                    "page_end": chunk.page_end,
-                },
-            )
-        )
+    history: List[Dict[str, str]] = []
+    for record in records:
+        history.append({"role": "user", "content": record["user_message"]})
+        history.append({"role": "assistant", "content": record["assistant_message"]})
+    return history
 
-    if points:
-        qdrant.upsert(collection_name=QDRANT_COLLECTION, points=points)
+
+def build_llm_messages(user_message: str, context: str, history: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    messages = [{"role": "system", "content": build_system_prompt(context)}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
+    return messages
+
+
+async def fetch_completion(messages: List[Dict[str, str]], stream: bool) -> Any:
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing GROQ_API_KEY.")
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": 0.2,
+        "stream": stream,
+    }
+
+    client = httpx.AsyncClient(timeout=90.0)
+    if stream:
+        return client, client.stream("POST", url, headers=headers, json=payload)
+
+    try:
+        response = await client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    finally:
+        await client.aclose()
 
 
 async def hybrid_retrieve(
@@ -455,61 +316,6 @@ async def hybrid_retrieve(
     return candidates[:limit]
 
 
-def build_context(candidates: List[Dict[str, Any]]) -> str:
-    sections: List[str] = []
-    total_chars = 0
-    for index, candidate in enumerate(candidates, start=1):
-        section = (
-            f"[Source {index} | pages {candidate['page_start']}-{candidate['page_end']}]\n"
-            f"{candidate['text']}"
-        )
-        if total_chars + len(section) > MAX_CONTEXT_CHARS:
-            break
-        sections.append(section)
-        total_chars += len(section)
-    return "\n\n".join(sections)
-
-
-def build_prompt(user_message: str, context: str) -> str:
-    return (
-        "You are NexusRAG, an expert research copilot. "
-        "Answer only from the retrieved context when a document context is provided. "
-        "If the answer is partially supported, say so clearly. "
-        "Cite useful evidence inline using [Source n]. "
-        "Use markdown for tables or code when it improves clarity.\n\n"
-        f"Retrieved Context:\n{context or 'No retrieved context supplied.'}\n\n"
-        f"User Request:\n{user_message}"
-    )
-
-
-async def fetch_completion(prompt: str, stream: bool) -> Any:
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="Missing GROQ_API_KEY.")
-
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
-        "stream": stream,
-    }
-
-    client = httpx.AsyncClient(timeout=90.0)
-    if stream:
-        return client, client.stream("POST", url, headers=headers, json=payload)
-
-    try:
-        response = await client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
-    finally:
-        await client.aclose()
-
-
 async def persist_message(
     database: AsyncIOMotorDatabase,
     workspace_id: str,
@@ -534,7 +340,8 @@ async def stream_chat_response(request: ChatRequest) -> AsyncIterator[str]:
     database = await get_database()
     citations = await hybrid_retrieve(database, request.workspace_id, request.message, request.document_id)
     context = build_context(citations)
-    prompt = build_prompt(request.message, context)
+    history = await get_recent_history_messages(database, request.workspace_id, request.document_id)
+    llm_messages = build_llm_messages(request.message, context, history)
 
     serializable_citations = [
         {
@@ -549,7 +356,7 @@ async def stream_chat_response(request: ChatRequest) -> AsyncIterator[str]:
     yield f"data: {json.dumps({'type': 'context', 'citations': serializable_citations})}\n\n"
 
     full_text = ""
-    client, stream_context = await fetch_completion(prompt, stream=True)
+    client, stream_context = await fetch_completion(llm_messages, stream=True)
     try:
         async with stream_context as response:
             response.raise_for_status()
@@ -591,18 +398,27 @@ async def stream_chat_response(request: ChatRequest) -> AsyncIterator[str]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     FILE_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    app_state["mongo_client"] = AsyncIOMotorClient(MONGODB_URI)
-    app_state["database"] = app_state["mongo_client"][MONGODB_DB]
-    app_state["qdrant"] = QdrantClient(url=QDRANT_URL)
-    await ensure_qdrant_collection()
+    mongo_client = AsyncIOMotorClient(MONGODB_URI)
+    qdrant = QdrantClient(url=QDRANT_URL)
+    redis = Redis.from_url(REDIS_URL)
+
+    ensure_qdrant_collection(qdrant)
+
+    app_state["mongo_client"] = mongo_client
+    app_state["database"] = mongo_client[MONGODB_DB]
+    app_state["qdrant"] = qdrant
+    app_state["redis"] = redis
+    app_state["queue"] = Queue(name=TASK_QUEUE_NAME, connection=redis, default_timeout=3600)
+
     yield
-    if app_state.get("mongo_client") is not None:
-        app_state["mongo_client"].close()
+
+    mongo_client.close()
+    redis.close()
 
 
 app = FastAPI(
     title=f"{APP_NAME} API",
-    description="Workspace-native hybrid RAG platform with MongoDB, Qdrant, and SSE streaming.",
+    description="Workspace-native hybrid RAG platform with conversational memory, queued ingestion, and SSE streaming.",
     version=APP_VERSION,
     lifespan=lifespan,
 )
@@ -621,17 +437,14 @@ async def health_check() -> Dict[str, Any]:
     database = await get_database()
     workspace_count = await database["workspaces"].count_documents({})
     document_count = await database["documents"].count_documents({})
+    queued_tasks = await database["ingestion_tasks"].count_documents({"status": {"$in": ["QUEUED", "PROCESSING"]}})
     return {
         "status": "healthy",
         "app": APP_NAME,
         "version": APP_VERSION,
         "workspace_count": workspace_count,
         "document_count": document_count,
-        "dependencies": {
-            "mongodb": MONGODB_URI,
-            "qdrant": QDRANT_URL,
-            "redis": REDIS_URL,
-        },
+        "queued_tasks": queued_tasks,
     }
 
 
@@ -639,7 +452,7 @@ async def health_check() -> Dict[str, Any]:
 async def list_workspaces() -> Dict[str, Any]:
     database = await get_database()
     workspaces = await database["workspaces"].find().sort("updated_at", -1).to_list(length=100)
-    return {"items": [serialize_id(workspace) for workspace in workspaces]}
+    return {"items": [serialize_document(workspace) for workspace in workspaces]}
 
 
 @app.post("/workspaces")
@@ -653,7 +466,7 @@ async def create_workspace(payload: WorkspaceCreate) -> Dict[str, Any]:
         )
         workspace["description"] = payload.description
         workspace["updated_at"] = utc_now()
-    return serialize_id(workspace)
+    return serialize_document(workspace)
 
 
 @app.get("/workspaces/{workspace_id}/documents")
@@ -662,7 +475,7 @@ async def list_documents(workspace_id: str) -> Dict[str, Any]:
     documents = await database["documents"].find(
         {"workspace_id": object_id(workspace_id, "workspace_id")}
     ).sort("created_at", -1).to_list(length=200)
-    return {"items": [serialize_id(document) for document in documents]}
+    return {"items": [serialize_document(document) for document in documents]}
 
 
 @app.get("/workspaces/{workspace_id}/messages")
@@ -671,15 +484,7 @@ async def list_messages(workspace_id: str) -> Dict[str, Any]:
     messages = await database["messages"].find(
         {"workspace_id": object_id(workspace_id, "workspace_id")}
     ).sort("created_at", 1).to_list(length=200)
-
-    items = []
-    for message in messages:
-        item = serialize_id(message)
-        if item.get("created_at"):
-            item["created_at"] = item["created_at"].isoformat()
-        items.append(item)
-
-    return {"items": items}
+    return {"items": [serialize_document(message) for message in messages]}
 
 
 @app.post("/documents/upload")
@@ -687,30 +492,23 @@ async def upload_document(
     file: UploadFile = File(...),
     workspace_id: Optional[str] = Form(default=None),
     workspace_name: Optional[str] = Form(default=None),
-) -> Dict[str, Any]:
+) -> JSONResponse:
     database = await get_database()
+    queue = get_queue()
     workspace = await get_or_create_workspace(database, workspace_id, workspace_name)
+
     raw_payload = await file.read()
     file_name = sanitize_filename(file.filename or "upload")
-    pages = extract_pages_from_upload(file_name, file.content_type or "", raw_payload)
-    if not pages:
-        raise HTTPException(status_code=400, detail="No extractable text found in document.")
-
-    combined_text = "\n".join(page.text for page in pages)
-    file_hash = compute_hash(combined_text)
-    chunks = build_semantic_chunks(pages)
-    if not chunks:
-        raise HTTPException(status_code=400, detail="Document produced no chunks.")
-
     document_record = {
         "workspace_id": workspace["_id"],
         "name": file_name,
         "mime_type": file.content_type or "application/octet-stream",
-        "file_hash": file_hash,
-        "page_count": len(pages),
-        "chunk_count": len(chunks),
+        "status": "QUEUED",
+        "page_count": 0,
+        "chunk_count": 0,
         "created_at": utc_now(),
         "updated_at": utc_now(),
+        "error": None,
     }
     insert_result = await database["documents"].insert_one(document_record)
     document_id = insert_result.inserted_id
@@ -725,18 +523,66 @@ async def upload_document(
         {"$set": {"storage_path": str(storage_path), "updated_at": utc_now()}},
     )
 
-    await store_document_chunks(database, workspace["_id"], document_id, chunks)
-    await database["workspaces"].update_one(
-        {"_id": workspace["_id"]},
-        {"$set": {"updated_at": utc_now()}},
-    )
+    task_id = str(uuid.uuid4())
+    task_record = {
+        "_id": task_id,
+        "workspace_id": str(workspace["_id"]),
+        "document_id": str(document_id),
+        "file_name": file_name,
+        "mime_type": file.content_type or "application/octet-stream",
+        "storage_path": str(storage_path),
+        "status": "QUEUED",
+        "progress": 0,
+        "phase": "Queued for background indexing",
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+        "completed_at": None,
+        "error": None,
+    }
+    await database["ingestion_tasks"].insert_one(task_record)
+
+    try:
+        queue.enqueue(process_document_task, task_id, job_timeout=3600, result_ttl=3600)
+    except Exception as exc:
+        error_text = str(exc)
+        await database["ingestion_tasks"].update_one(
+            {"_id": task_id},
+            {"$set": {"status": "FAILED", "error": error_text, "updated_at": utc_now()}},
+        )
+        await database["documents"].update_one(
+            {"_id": document_id},
+            {"$set": {"status": "FAILED", "error": error_text, "updated_at": utc_now()}},
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to enqueue indexing task: {error_text}") from exc
 
     document_record["_id"] = document_id
     document_record["storage_path"] = str(storage_path)
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "workspace": serialize_document(workspace),
+            "document": serialize_document(document_record),
+            "task": serialize_document(task_record),
+            "message": "Document accepted for background indexing.",
+        },
+    )
+
+
+@app.get("/tasks/{task_id}")
+async def get_task_status(task_id: str) -> Dict[str, Any]:
+    database = await get_database()
+    task = await database["ingestion_tasks"].find_one({"_id": task_id})
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    document = None
+    if task.get("document_id") and ObjectId.is_valid(task["document_id"]):
+        document = await database["documents"].find_one({"_id": ObjectId(task["document_id"])})
+
     return {
-        "workspace": serialize_id(workspace),
-        "document": serialize_id(document_record),
-        "message": "Document indexed successfully.",
+        "task": serialize_document(task),
+        "document": serialize_document(document) if document else None,
     }
 
 
@@ -759,8 +605,10 @@ async def chat_once(request: ChatRequest) -> Dict[str, Any]:
     database = await get_database()
     citations = await hybrid_retrieve(database, request.workspace_id, request.message, request.document_id)
     context = build_context(citations)
-    prompt = build_prompt(request.message, context)
-    answer = await fetch_completion(prompt, stream=False)
+    history = await get_recent_history_messages(database, request.workspace_id, request.document_id)
+    llm_messages = build_llm_messages(request.message, context, history)
+    answer = await fetch_completion(llm_messages, stream=False)
+
     serializable_citations = [
         {
             "document_id": citation["document_id"],
@@ -778,10 +626,7 @@ async def chat_once(request: ChatRequest) -> Dict[str, Any]:
         assistant_message=answer,
         citations=serializable_citations,
     )
-    return {
-        "response": answer,
-        "citations": serializable_citations,
-    }
+    return {"response": answer, "citations": serializable_citations}
 
 
 @app.post("/chat/stream")

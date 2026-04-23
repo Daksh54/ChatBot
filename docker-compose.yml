@@ -24,6 +24,28 @@ services:
       - qdrant
       - redis
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: dockerfile
+    command: rq worker document_ingestion --url redis://redis:6379/0
+    env_file:
+      - .env
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017
+      MONGODB_DB: nexusrag
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: workspace_chunks
+      REDIS_URL: redis://redis:6379/0
+      TASK_QUEUE_NAME: document_ingestion
+      FILE_STORAGE_DIR: storage/uploads
+    volumes:
+      - ./backend/storage:/app/storage
+    depends_on:
+      - mongodb
+      - qdrant
+      - redis
+
   frontend:
     build:
       context: ./frontend

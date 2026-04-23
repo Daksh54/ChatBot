@@ -116,6 +116,7 @@ export default function App() {
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [activeTask, setActiveTask] = useState(null);
   const [viewerPage, setViewerPage] = useState(1);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const fileInputRef = useRef(null);
@@ -160,6 +161,20 @@ export default function App() {
       }
     })();
   }, [selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (!activeTask?.id || activeTask.status === "SUCCEEDED" || activeTask.status === "FAILED") {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void pollTaskStatus(activeTask.id);
+    }, 2000);
+
+    void pollTaskStatus(activeTask.id);
+
+    return () => window.clearInterval(intervalId);
+  }, [activeTask?.id, activeTask?.status, selectedWorkspaceId]);
 
   async function bootstrap() {
     try {
@@ -227,6 +242,50 @@ export default function App() {
     setMessages(history);
   }
 
+  function upsertDocument(document) {
+    if (!document) {
+      return;
+    }
+
+    setDocuments((prev) => {
+      const exists = prev.some((item) => item.id === document.id);
+      if (exists) {
+        return prev.map((item) => (item.id === document.id ? document : item));
+      }
+      return [document, ...prev];
+    });
+  }
+
+  async function pollTaskStatus(taskId) {
+    try {
+      const { data } = await axios.get(`${API_BASE_URL}/tasks/${taskId}`);
+      const nextTask = data.task;
+      setActiveTask(nextTask);
+      upsertDocument(data.document);
+
+      if (nextTask.status === "PROCESSING") {
+        setStatusText(`${nextTask.phase} (${nextTask.progress}%)`);
+      }
+
+      if (nextTask.status === "SUCCEEDED") {
+        if (selectedWorkspaceId) {
+          await loadDocuments(selectedWorkspaceId);
+        }
+        if (data.document?.id) {
+          setSelectedDocumentId(data.document.id);
+        }
+        setViewerPage(1);
+        setStatusText(`${data.document?.name || "Document"} indexed successfully.`);
+      }
+
+      if (nextTask.status === "FAILED") {
+        setStatusText(`Indexing failed: ${nextTask.error || "Unknown worker error"}`);
+      }
+    } catch (error) {
+      setStatusText(`Task polling failed: ${error.message}`);
+    }
+  }
+
   async function handleCreateWorkspace() {
     if (!workspaceName.trim() || isCreatingWorkspace) {
       return;
@@ -255,7 +314,7 @@ export default function App() {
     }
 
     setIsUploading(true);
-    setStatusText(`Indexing ${file.name} with semantic chunking...`);
+    setStatusText(`Queueing ${file.name} for background indexing...`);
 
     try {
       const formData = new FormData();
@@ -265,10 +324,11 @@ export default function App() {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      await loadDocuments(selectedWorkspaceId);
+      setActiveTask(data.task);
+      upsertDocument(data.document);
       setSelectedDocumentId(data.document.id);
       setViewerPage(1);
-      setStatusText(`${data.document.name} indexed into ${data.workspace.name}.`);
+      setStatusText(`${data.document.name} accepted. Worker is indexing it now.`);
     } catch (error) {
       setStatusText(`Upload failed: ${error.message}`);
     } finally {
@@ -514,6 +574,29 @@ export default function App() {
                   />
                 </label>
                 <div className="mt-3 space-y-2">
+                  {activeTask && (
+                    <div className="rounded-2xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium text-white">
+                          {activeTask.status === "SUCCEEDED" ? "Indexing complete" : "Indexing in progress"}
+                        </p>
+                        <p className="text-xs uppercase tracking-[0.2em] text-cyan-100/80">
+                          {activeTask.progress}%
+                        </p>
+                      </div>
+                      <p className="mt-2 text-sm text-cyan-50/80">
+                        {activeTask.phase}
+                      </p>
+                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-900/70">
+                        <div
+                          className={`h-full rounded-full ${
+                            activeTask.status === "FAILED" ? "bg-rose-400" : "bg-cyan-300"
+                          }`}
+                          style={{ width: `${Math.max(6, activeTask.progress || 0)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                   {documents.map((document) => {
                     const isSelected = document.id === selectedDocumentId;
                     return (
@@ -530,7 +613,20 @@ export default function App() {
                             : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
                         }`}
                       >
-                        <p className="truncate font-medium">{document.name}</p>
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="truncate font-medium">{document.name}</p>
+                          <span
+                            className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                              document.status === "READY"
+                                ? "bg-emerald-400/15 text-emerald-200"
+                                : document.status === "FAILED"
+                                  ? "bg-rose-400/15 text-rose-200"
+                                  : "bg-amber-400/15 text-amber-200"
+                            }`}
+                          >
+                            {document.status || "READY"}
+                          </span>
+                        </div>
                         <p className="mt-1 text-xs text-slate-400">
                           {document.page_count} pages • {document.chunk_count} chunks
                         </p>
