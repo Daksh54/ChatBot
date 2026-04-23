@@ -283,7 +283,12 @@ async def hybrid_retrieve(
 
     for index in sparse_top:
         document = chunk_documents[int(index)]
-        point_id = f"{document['document_id']}-{document['chunk_index']}"
+        point_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_DNS,
+                f"{document['document_id']}-{document['chunk_index']}",
+            )
+        )
         entry = merged.setdefault(
             point_id,
             {

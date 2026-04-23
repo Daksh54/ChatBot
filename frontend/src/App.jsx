@@ -1,6 +1,6 @@
 // Author: Daksh Sharma 26434
 
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -126,13 +126,9 @@ export default function App() {
   const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedWorkspaceId) || null;
   const selectedDocument = documents.find((document) => document.id === selectedDocumentId) || null;
 
-  const scrollChatToBottom = useEffectEvent(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  });
-
   useEffect(() => {
-    scrollChatToBottom();
-  }, [messages, scrollChatToBottom]);
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages]);
 
   useEffect(() => {
     if (bootstrappedRef.current) {

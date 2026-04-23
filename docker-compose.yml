@@ -28,7 +28,7 @@ services:
     build:
       context: ./backend
       dockerfile: dockerfile
-    command: rq worker document_ingestion --url redis://redis:6379/0
+    command: ["rq", "worker", "document_ingestion", "--url", "redis://redis:6379/0"]
     env_file:
       - .env
     environment:

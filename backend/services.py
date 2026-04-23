@@ -3,6 +3,7 @@
 import hashlib
 import io
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -275,7 +276,7 @@ def flush_chunk_batch(
         )
         points.append(
             models.PointStruct(
-                id=f"{document_id}-{chunk_index}",
+                id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{document_id}-{chunk_index}")),
                 vector=embeddings[offset].tolist(),
                 payload={
                     "workspace_id": workspace_id,
