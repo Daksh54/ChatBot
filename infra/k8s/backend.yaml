@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: nexusrag
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: nexusrag/backend:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MONGODB_URI
+              value: mongodb://mongodb:27017
+            - name: MONGODB_DB
+              value: nexusrag
+            - name: QDRANT_URL
+              value: http://qdrant:6333
+            - name: QDRANT_COLLECTION
+              value: workspace_chunks
+            - name: REDIS_URL
+              value: redis://redis:6379/0
+            - name: FRONTEND_ORIGIN
+              value: http://frontend
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nexusrag-secrets
+                  key: groq-api-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: nexusrag
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 8000
+      targetPort: 8000

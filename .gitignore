@@ -100,6 +100,8 @@ Desktop.ini
 
 # Uploads and temporary files
 uploads/
+backend/storage/uploads/*
+!backend/storage/uploads/.gitkeep
 tmp/
 __temp__/
 __trash__/

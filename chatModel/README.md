@@ -1,39 +1,10 @@
-# TalkTonic-RAG-Implemented
+# Legacy ChatModel Notes
 
-TalkTonic is an intelligent file-aware chatbot built with Retrieval-Augmented Generation (RAG).  
-It allows users to upload documents (PDFs, images, DOCX, TXT), extracts their content using OCR & parsing, chunks the text, creates vector embeddings, and enables conversational Q&A over the content.
+This folder contains earlier experimentation from the pre-`NexusRAG` prototype phase.
 
----
+The active product direction now lives in:
 
-## ✨ Features
+- `backend/` for the FastAPI + MongoDB + Qdrant backend
+- `frontend/` for the Vite + React interface
 
-- 📄 Supports **PDF, Image (OCR), DOCX, and TXT**
-- 🧠 Uses paraphase miniLM for semantic understanding
-- 📚 Document chunking for context-aware retrieval
-- 🔍 FAISS for efficient similarity search
-- 💬 Chat-style Q&A interface with **Groq API (LLaMA 3)** as the LLM
-- 🧾 Summary / query input post-upload + persistent chat history
-- 🖼️ Smart OCR fallback for scanned documents using `Tesseract`
-- ☁️ Deployed on **Render Free Tier**
-
----
-
-## 🔧 Tech Stack
-
-| Component        | Tech Used                     |
-|------------------|-------------------------------|
-| Frontend UI      | Streamlit                     |
-| Embedding Model  | paraphaseMiniLM               |
-| Vector Store     | FAISS                         |
-| OCR Engine       | Tesseract OCR (`pytesseract`) |
-| PDF Parsing      | `pdfplumber`                  |
-| DOCX Handling    | `python-docx`                 |
-| Chat LLM         | Groq API (`llama3-8b-8192`)   |
-| Deployment       | Render (Free Tier)            |
-
----
-
-### 📦 Install Dependencies
-
-```bash
-pip install -r requirements.txt
+Treat this directory as archival unless you intentionally want to extract reusable prompt or model experiments from it.

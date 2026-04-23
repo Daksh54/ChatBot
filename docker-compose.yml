@@ -1,0 +1,63 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: dockerfile
+    env_file:
+      - .env
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017
+      MONGODB_DB: nexusrag
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: workspace_chunks
+      REDIS_URL: redis://redis:6379/0
+      FILE_STORAGE_DIR: storage/uploads
+      FRONTEND_ORIGIN: http://localhost:5173
+    volumes:
+      - ./backend/storage:/app/storage
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+      - qdrant
+      - redis
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+  mongodb:
+    image: mongo:8.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  redis:
+    image: redis:8.2-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  mongo-data:
+  qdrant-data:
+  redis-data:
