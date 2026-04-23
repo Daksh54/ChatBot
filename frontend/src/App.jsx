@@ -9,18 +9,33 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import {
   ArrowUp,
   Bot,
-  BrainCircuit,
   DatabaseZap,
+  FileText,
   FileUp,
   FolderKanban,
+  History,
+  House,
   LoaderCircle,
   MessageSquareText,
-  PanelLeftClose,
   Plus,
   Sparkles,
 } from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+const navItems = [
+  { id: "home", label: "Home", icon: House },
+  { id: "chat", label: "Chat", icon: MessageSquareText },
+  { id: "documents", label: "Documents", icon: FileText },
+  { id: "workspaces", label: "Workspaces", icon: FolderKanban },
+  { id: "history", label: "History", icon: History },
+];
+
+const promptIdeas = [
+  "Summarize the current document.",
+  "Compare the main points across sources.",
+  "List the strongest cited evidence.",
+];
 
 const createMessageId = () =>
   typeof crypto !== "undefined" && crypto.randomUUID
@@ -104,7 +119,532 @@ function MarkdownMessage({ children }) {
   );
 }
 
+function PageHeader({ title, subtitle, actions }) {
+  return (
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <h1 className="font-display text-3xl font-semibold text-white">{title}</h1>
+        {subtitle ? <p className="mt-2 text-sm text-slate-400">{subtitle}</p> : null}
+      </div>
+      {actions ? <div className="flex flex-wrap gap-3">{actions}</div> : null}
+    </div>
+  );
+}
+
+function Panel({ title, subtitle, actions, children, className = "" }) {
+  return (
+    <section className={`rounded-[1.75rem] border border-white/10 bg-slate-950/50 p-5 backdrop-blur-xl ${className}`}>
+      {(title || subtitle || actions) && (
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            {title ? <h2 className="text-lg font-semibold text-white">{title}</h2> : null}
+            {subtitle ? <p className="mt-1 text-sm text-slate-400">{subtitle}</p> : null}
+          </div>
+          {actions ? <div className="flex flex-wrap gap-3">{actions}</div> : null}
+        </div>
+      )}
+      {children}
+    </section>
+  );
+}
+
+function StatCard({ label, value }) {
+  return (
+    <div className="rounded-[1.5rem] border border-white/10 bg-white/5 p-5">
+      <p className="text-sm text-slate-400">{label}</p>
+      <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
+    </div>
+  );
+}
+
+function EmptyState({ title, description }) {
+  return (
+    <div className="rounded-[1.5rem] border border-dashed border-white/10 bg-white/5 px-5 py-10 text-center">
+      <p className="text-base font-medium text-white">{title}</p>
+      <p className="mt-2 text-sm text-slate-400">{description}</p>
+    </div>
+  );
+}
+
+function DocumentPreview({ selectedDocument, viewerPage }) {
+  if (!selectedDocument) {
+    return <EmptyState title="No document selected" description="Choose a document from the list." />;
+  }
+
+  if (selectedDocument.mime_type?.includes("pdf")) {
+    return (
+      <div className="overflow-hidden rounded-[1.5rem] border border-white/10 bg-slate-900/80">
+        <iframe
+          title="Document viewer"
+          src={`${API_BASE_URL}/documents/${selectedDocument.id}/content#page=${viewerPage}`}
+          className="h-[620px] w-full bg-white"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-[1.5rem] border border-white/10 bg-white/5 p-6">
+      <p className="text-sm text-slate-400">{selectedDocument.mime_type || "Document"}</p>
+      <h3 className="mt-2 text-2xl font-semibold text-white">{selectedDocument.name}</h3>
+      <div className="mt-6 grid gap-4 sm:grid-cols-2">
+        <StatCard label="Pages" value={selectedDocument.page_count} />
+        <StatCard label="Chunks" value={selectedDocument.chunk_count} />
+      </div>
+    </div>
+  );
+}
+
+function HomePage({
+  workspaces,
+  documents,
+  messages,
+  selectedWorkspace,
+  selectedDocument,
+  activeTask,
+  statusText,
+  setActivePage,
+}) {
+  const lastAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant");
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Home"
+        subtitle="Quick overview"
+        actions={
+          <>
+            <button
+              type="button"
+              onClick={() => setActivePage("chat")}
+              className="rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300"
+            >
+              Open chat
+            </button>
+            <button
+              type="button"
+              onClick={() => setActivePage("documents")}
+              className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm text-slate-100 transition hover:bg-white/10"
+            >
+              Open documents
+            </button>
+          </>
+        }
+      />
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Workspaces" value={workspaces.length} />
+        <StatCard label="Documents" value={documents.length} />
+        <StatCard label="Messages" value={messages.length} />
+        <StatCard label="Status" value={activeTask ? activeTask.status : "Ready"} />
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+        <Panel title="Current selection">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4">
+              <p className="text-sm text-slate-400">Workspace</p>
+              <p className="mt-2 text-lg font-semibold text-white">
+                {selectedWorkspace?.name || "No workspace"}
+              </p>
+            </div>
+            <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4">
+              <p className="text-sm text-slate-400">Document</p>
+              <p className="mt-2 text-lg font-semibold text-white">
+                {selectedDocument?.name || "No document"}
+              </p>
+            </div>
+            <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4 md:col-span-2">
+              <p className="text-sm text-slate-400">Status</p>
+              <p className="mt-2 text-white">{statusText}</p>
+            </div>
+          </div>
+        </Panel>
+
+        <Panel title="Quick actions">
+          <div className="grid gap-3">
+            {navItems
+              .filter((item) => item.id !== "home")
+              .map((item) => {
+                const Icon = item.icon;
+
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActivePage(item.id)}
+                    className="flex items-center gap-3 rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-4 text-left text-sm text-slate-200 transition hover:bg-white/10"
+                  >
+                    <Icon className="h-4 w-4 text-cyan-300" />
+                    {item.label}
+                  </button>
+                );
+              })}
+          </div>
+        </Panel>
+      </div>
+
+      <Panel title="Latest reply">
+        {lastAssistantMessage ? (
+          <div className="text-sm leading-7 text-slate-200">
+            <MarkdownMessage>{lastAssistantMessage.content}</MarkdownMessage>
+          </div>
+        ) : (
+          <EmptyState title="No replies yet" description="Start a chat to see recent answers here." />
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function WorkspacesPage({
+  workspaceName,
+  setWorkspaceName,
+  handleCreateWorkspace,
+  isCreatingWorkspace,
+  workspaces,
+  selectedWorkspaceId,
+  setSelectedWorkspaceId,
+}) {
+  return (
+    <div className="space-y-6">
+      <PageHeader title="Workspaces" subtitle="Create and switch workspaces" />
+
+      <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
+        <Panel title="New workspace">
+          <div className="space-y-3">
+            <input
+              value={workspaceName}
+              onChange={(event) => setWorkspaceName(event.target.value)}
+              placeholder="Workspace name"
+              className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/50 focus:bg-white/10"
+            />
+            <button
+              type="button"
+              onClick={() => void handleCreateWorkspace()}
+              disabled={isCreatingWorkspace}
+              className="inline-flex items-center gap-2 rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Plus className="h-4 w-4" />
+              Create
+            </button>
+          </div>
+        </Panel>
+
+        <Panel title="Workspace list">
+          <div className="grid gap-3">
+            {workspaces.length ? (
+              workspaces.map((workspace) => {
+                const isActive = workspace.id === selectedWorkspaceId;
+
+                return (
+                  <button
+                    key={workspace.id}
+                    type="button"
+                    onClick={() => setSelectedWorkspaceId(workspace.id)}
+                    className={`rounded-[1.25rem] border px-4 py-4 text-left transition ${
+                      isActive
+                        ? "border-cyan-300/40 bg-cyan-300/12 text-white"
+                        : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
+                    }`}
+                  >
+                    <p className="font-medium">{workspace.name}</p>
+                    <p className="mt-1 text-sm text-slate-400">
+                      {workspace.description || "No description"}
+                    </p>
+                  </button>
+                );
+              })
+            ) : (
+              <EmptyState title="No workspaces" description="Create one to get started." />
+            )}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function DocumentsPage({
+  selectedWorkspace,
+  documents,
+  selectedDocumentId,
+  setSelectedDocumentId,
+  viewerPage,
+  setViewerPage,
+  selectedDocument,
+  activeTask,
+  isUploading,
+  handleUpload,
+  fileInputRef,
+}) {
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Documents"
+        subtitle={selectedWorkspace ? selectedWorkspace.name : "Select a workspace first"}
+        actions={
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300">
+            {isUploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
+            Upload
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.csv,.xlsx,.xls"
+              onChange={(event) => void handleUpload(event)}
+              className="hidden"
+            />
+          </label>
+        }
+      />
+
+      <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
+        <Panel title="Files">
+          <div className="space-y-3">
+            {activeTask ? (
+              <div className="rounded-[1.25rem] border border-cyan-300/20 bg-cyan-400/10 px-4 py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-white">{activeTask.status}</p>
+                  <p className="text-xs uppercase tracking-[0.2em] text-cyan-100/80">
+                    {activeTask.progress}%
+                  </p>
+                </div>
+                <p className="mt-2 text-sm text-cyan-50/80">{activeTask.phase}</p>
+              </div>
+            ) : null}
+
+            {documents.length ? (
+              documents.map((document) => {
+                const isSelected = document.id === selectedDocumentId;
+
+                return (
+                  <button
+                    key={document.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedDocumentId(document.id);
+                      setViewerPage(1);
+                    }}
+                    className={`w-full rounded-[1.25rem] border px-4 py-4 text-left transition ${
+                      isSelected
+                        ? "border-sky-400/50 bg-sky-400/12 text-white"
+                        : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="truncate font-medium">{document.name}</p>
+                      <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-300">
+                        {document.status || "READY"}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-400">
+                      {document.page_count} pages • {document.chunk_count} chunks
+                    </p>
+                  </button>
+                );
+              })
+            ) : (
+              <EmptyState title="No documents" description="Upload a file in the selected workspace." />
+            )}
+          </div>
+        </Panel>
+
+        <Panel
+          title={selectedDocument ? selectedDocument.name : "Preview"}
+          subtitle={selectedDocument ? `Page ${viewerPage}` : ""}
+        >
+          <DocumentPreview selectedDocument={selectedDocument} viewerPage={viewerPage} />
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function ChatPage({
+  messages,
+  selectedWorkspace,
+  selectedDocument,
+  messageInput,
+  setMessageInput,
+  handleSendMessage,
+  handleMessageKeyDown,
+  isStreaming,
+  jumpToCitation,
+  setActivePage,
+  chatEndRef,
+}) {
+  return (
+    <div className="space-y-6">
+      <PageHeader title="Chat" subtitle={selectedWorkspace ? selectedWorkspace.name : "Select a workspace first"} />
+
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <Panel title="Conversation" className="flex min-h-[760px] flex-col">
+          <div className="flex-1 space-y-4 overflow-y-auto pr-2">
+            {messages.length ? (
+              messages.map((message) => (
+                <article
+                  key={message.id}
+                  className={`rounded-[1.5rem] border p-5 ${
+                    message.role === "user"
+                      ? "ml-10 border-cyan-400/20 bg-cyan-400/12 text-white"
+                      : "mr-4 border-white/10 bg-white/5 text-slate-100"
+                  }`}
+                >
+                  <div className="mb-4 flex items-center gap-3">
+                    <div
+                      className={`grid h-10 w-10 place-items-center rounded-2xl ${
+                        message.role === "user" ? "bg-cyan-400 text-slate-950" : "bg-white/10 text-white"
+                      }`}
+                    >
+                      {message.role === "user" ? <ArrowUp className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+                    </div>
+                    <div>
+                      <p className="font-medium">{message.role === "user" ? "You" : "Assistant"}</p>
+                      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                        {message.streaming ? "Streaming" : "Ready"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {message.role === "assistant" ? (
+                    <div className="text-sm leading-7 text-slate-200">
+                      <MarkdownMessage>{message.content || "Thinking..."}</MarkdownMessage>
+                    </div>
+                  ) : (
+                    <p className="whitespace-pre-wrap text-slate-50">{message.content}</p>
+                  )}
+
+                  {!!message.citations?.length && (
+                    <div className="mt-5 flex flex-wrap gap-2">
+                      {message.citations.map((citation, index) => (
+                        <button
+                          key={`${message.id}-${index}`}
+                          type="button"
+                          onClick={() => {
+                            jumpToCitation(citation);
+                            setActivePage("documents");
+                          }}
+                          className="rounded-full border border-sky-300/30 bg-sky-400/10 px-3 py-1.5 text-xs font-medium text-sky-100 transition hover:bg-sky-400/20"
+                        >
+                          Source {index + 1} • Page {citation.page_start}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              ))
+            ) : (
+              <EmptyState title="No messages" description="Send a message to start chatting." />
+            )}
+            <div ref={chatEndRef} />
+          </div>
+
+          <div className="mt-5 rounded-[1.5rem] border border-white/10 bg-slate-900/80 p-3">
+            <div className="flex gap-3">
+              <textarea
+                value={messageInput}
+                onChange={(event) => setMessageInput(event.target.value)}
+                onKeyDown={handleMessageKeyDown}
+                placeholder="Ask a question..."
+                className="min-h-[92px] flex-1 resize-none rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-4 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:bg-white/10"
+              />
+              <button
+                type="button"
+                onClick={() => void handleSendMessage()}
+                disabled={!messageInput.trim() || isStreaming}
+                className="inline-flex w-16 items-center justify-center rounded-[1.25rem] bg-cyan-400 text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isStreaming ? <LoaderCircle className="h-5 w-5 animate-spin" /> : <ArrowUp className="h-5 w-5" />}
+              </button>
+            </div>
+          </div>
+        </Panel>
+
+        <div className="space-y-6">
+          <Panel title="Context">
+            <div className="space-y-4">
+              <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4">
+                <p className="text-sm text-slate-400">Workspace</p>
+                <p className="mt-2 text-base font-semibold text-white">
+                  {selectedWorkspace?.name || "None"}
+                </p>
+              </div>
+              <div className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4">
+                <p className="text-sm text-slate-400">Document</p>
+                <p className="mt-2 text-base font-semibold text-white">
+                  {selectedDocument?.name || "None"}
+                </p>
+              </div>
+            </div>
+          </Panel>
+
+          <Panel title="Prompts">
+            <div className="space-y-3">
+              {promptIdeas.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => setMessageInput(prompt)}
+                  className="w-full rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/10"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HistoryPage({ messages, jumpToCitation, setActivePage }) {
+  return (
+    <div className="space-y-6">
+      <PageHeader title="History" subtitle="Recent messages in the current workspace" />
+
+      <Panel title="Messages">
+        {messages.length ? (
+          <div className="space-y-4">
+            {messages.map((message) => (
+              <div key={message.id} className="rounded-[1.25rem] border border-white/10 bg-white/5 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-medium text-white">{message.role === "user" ? "You" : "Assistant"}</p>
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                    {message.citations?.length || 0} citations
+                  </p>
+                </div>
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-300">{message.content}</p>
+                {!!message.citations?.length && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {message.citations.map((citation, index) => (
+                      <button
+                        key={`${message.id}-history-${index}`}
+                        type="button"
+                        onClick={() => {
+                          jumpToCitation(citation);
+                          setActivePage("documents");
+                        }}
+                        className="rounded-full border border-sky-300/30 bg-sky-400/10 px-3 py-1.5 text-xs font-medium text-sky-100 transition hover:bg-sky-400/20"
+                      >
+                        Source {index + 1} • Page {citation.page_start}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState title="No history" description="Messages will appear here after you chat." />
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 export default function App() {
+  const [activePage, setActivePage] = useState("home");
   const [workspaceName, setWorkspaceName] = useState("");
   const [messageInput, setMessageInput] = useState("");
   const [workspaces, setWorkspaces] = useState([]);
@@ -112,13 +652,12 @@ export default function App() {
   const [documents, setDocuments] = useState([]);
   const [selectedDocumentId, setSelectedDocumentId] = useState("");
   const [messages, setMessages] = useState([]);
-  const [statusText, setStatusText] = useState("Hybrid retrieval ready.");
+  const [statusText, setStatusText] = useState("Ready");
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeTask, setActiveTask] = useState(null);
   const [viewerPage, setViewerPage] = useState(1);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
   const bootstrappedRef = useRef(false);
@@ -177,11 +716,13 @@ export default function App() {
       const { data } = await axios.get(`${API_BASE_URL}/workspaces`);
       const items = data.items || [];
       setWorkspaces(items);
+
       if (items[0]) {
         setSelectedWorkspaceId(items[0].id);
       }
+
       if (!items.length) {
-        const created = await createWorkspace("Flagship Workspace", "Primary research lane for documents and chats.");
+        const created = await createWorkspace("Main Workspace", "Default workspace");
         setSelectedWorkspaceId(created.id);
       }
     } catch (error) {
@@ -194,6 +735,7 @@ export default function App() {
       name,
       description,
     });
+
     setWorkspaces((prev) => {
       const exists = prev.some((workspace) => workspace.id === data.id);
       if (exists) {
@@ -201,12 +743,14 @@ export default function App() {
       }
       return [data, ...prev];
     });
+
     return data;
   }
 
   async function loadDocuments(workspaceId) {
     const { data } = await axios.get(`${API_BASE_URL}/workspaces/${workspaceId}/documents`);
     const items = data.items || [];
+
     setDocuments(items);
     setSelectedDocumentId((current) => {
       if (current && items.some((document) => document.id === current)) {
@@ -267,11 +811,13 @@ export default function App() {
         if (selectedWorkspaceId) {
           await loadDocuments(selectedWorkspaceId);
         }
+
         if (data.document?.id) {
           setSelectedDocumentId(data.document.id);
         }
+
         setViewerPage(1);
-        setStatusText(`${data.document?.name || "Document"} indexed successfully.`);
+        setStatusText(`${data.document?.name || "Document"} indexed.`);
       }
 
       if (nextTask.status === "FAILED") {
@@ -288,14 +834,12 @@ export default function App() {
     }
 
     setIsCreatingWorkspace(true);
+
     try {
-      const workspace = await createWorkspace(
-        workspaceName.trim(),
-        "A dedicated collection for portfolio-grade retrieval workflows."
-      );
+      const workspace = await createWorkspace(workspaceName.trim(), "Workspace");
       setWorkspaceName("");
       setSelectedWorkspaceId(workspace.id);
-      setStatusText(`Workspace "${workspace.name}" is ready.`);
+      setStatusText(`Workspace "${workspace.name}" created.`);
     } catch (error) {
       setStatusText(`Workspace creation failed: ${error.message}`);
     } finally {
@@ -310,12 +854,13 @@ export default function App() {
     }
 
     setIsUploading(true);
-    setStatusText(`Queueing ${file.name} for background indexing...`);
+    setStatusText(`Uploading ${file.name}...`);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("workspace_id", selectedWorkspaceId);
+
       const { data } = await axios.post(`${API_BASE_URL}/documents/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -324,7 +869,7 @@ export default function App() {
       upsertDocument(data.document);
       setSelectedDocumentId(data.document.id);
       setViewerPage(1);
-      setStatusText(`${data.document.name} accepted. Worker is indexing it now.`);
+      setStatusText(`${data.document.name} uploaded.`);
     } catch (error) {
       setStatusText(`Upload failed: ${error.message}`);
     } finally {
@@ -356,7 +901,7 @@ export default function App() {
     ]);
     setMessageInput("");
     setIsStreaming(true);
-    setStatusText("Generating streamed answer...");
+    setStatusText("Generating answer...");
 
     try {
       const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -388,9 +933,7 @@ export default function App() {
         buffer = events.pop() || "";
 
         for (const eventChunk of events) {
-          const line = eventChunk
-            .split("\n")
-            .find((entry) => entry.startsWith("data: "));
+          const line = eventChunk.split("\n").find((entry) => entry.startsWith("data: "));
 
           if (!line) {
             continue;
@@ -464,380 +1007,124 @@ export default function App() {
     }
   }
 
+  function renderPage() {
+    switch (activePage) {
+      case "chat":
+        return (
+          <ChatPage
+            messages={messages}
+            selectedWorkspace={selectedWorkspace}
+            selectedDocument={selectedDocument}
+            messageInput={messageInput}
+            setMessageInput={setMessageInput}
+            handleSendMessage={handleSendMessage}
+            handleMessageKeyDown={handleMessageKeyDown}
+            isStreaming={isStreaming}
+            jumpToCitation={jumpToCitation}
+            setActivePage={setActivePage}
+            chatEndRef={chatEndRef}
+          />
+        );
+      case "documents":
+        return (
+          <DocumentsPage
+            selectedWorkspace={selectedWorkspace}
+            documents={documents}
+            selectedDocumentId={selectedDocumentId}
+            setSelectedDocumentId={setSelectedDocumentId}
+            viewerPage={viewerPage}
+            setViewerPage={setViewerPage}
+            selectedDocument={selectedDocument}
+            activeTask={activeTask}
+            isUploading={isUploading}
+            handleUpload={handleUpload}
+            fileInputRef={fileInputRef}
+          />
+        );
+      case "workspaces":
+        return (
+          <WorkspacesPage
+            workspaceName={workspaceName}
+            setWorkspaceName={setWorkspaceName}
+            handleCreateWorkspace={handleCreateWorkspace}
+            isCreatingWorkspace={isCreatingWorkspace}
+            workspaces={workspaces}
+            selectedWorkspaceId={selectedWorkspaceId}
+            setSelectedWorkspaceId={setSelectedWorkspaceId}
+          />
+        );
+      case "history":
+        return (
+          <HistoryPage
+            messages={messages}
+            jumpToCitation={jumpToCitation}
+            setActivePage={setActivePage}
+          />
+        );
+      default:
+        return (
+          <HomePage
+            workspaces={workspaces}
+            documents={documents}
+            messages={messages}
+            selectedWorkspace={selectedWorkspace}
+            selectedDocument={selectedDocument}
+            activeTask={activeTask}
+            statusText={statusText}
+            setActivePage={setActivePage}
+          />
+        );
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.16),_transparent_32%),linear-gradient(135deg,_#020617,_#0f172a_46%,_#111827)] text-slate-100">
-      <div className="mx-auto flex min-h-screen max-w-[1600px] gap-4 px-4 py-4 lg:px-6">
-        <aside
-          className={`relative overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/55 shadow-2xl shadow-cyan-950/30 backdrop-blur-xl transition-all ${
-            sidebarCollapsed ? "w-[88px]" : "w-full max-w-sm"
-          }`}
-        >
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(14,165,233,0.18),_transparent_30%),linear-gradient(180deg,_rgba(15,23,42,0.2),_rgba(2,6,23,0.85))]" />
-          <div className="relative flex h-full flex-col p-5">
-            <div className="mb-6 flex items-start justify-between gap-3">
-              <div className={sidebarCollapsed ? "hidden" : "block"}>
-                <p className="text-xs uppercase tracking-[0.35em] text-cyan-300/80">NexusRAG</p>
-                <h1 className="mt-2 font-display text-3xl font-semibold leading-tight text-white">
-                  Portfolio-grade
-                  <br />
-                  document intelligence
-                </h1>
+      <div className="mx-auto max-w-[1440px] px-4 py-4 lg:px-6">
+        <header className="sticky top-4 z-20 mb-6 rounded-[1.75rem] border border-white/10 bg-slate-950/70 px-5 py-4 backdrop-blur-xl">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="grid h-11 w-11 place-items-center rounded-2xl bg-cyan-400/15 text-cyan-300">
+                <Sparkles className="h-5 w-5" />
               </div>
-              <button
-                type="button"
-                onClick={() => setSidebarCollapsed((value) => !value)}
-                className="rounded-2xl border border-white/10 bg-white/5 p-3 text-slate-200 transition hover:bg-white/10"
-              >
-                <PanelLeftClose className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className={sidebarCollapsed ? "hidden" : "block"}>
-              <div className="rounded-3xl border border-cyan-400/15 bg-cyan-400/10 p-4 text-sm text-cyan-50">
-                <div className="flex items-center gap-3">
-                  <Sparkles className="h-5 w-5 text-cyan-300" />
-                  <p className="font-medium">Hybrid retrieval + streaming answers</p>
-                </div>
-                <p className="mt-2 text-cyan-100/80">
-                  Mongo-backed workspaces, Qdrant vectors, and source-aware citations are wired into the new shell.
+              <div>
+                <p className="font-display text-xl font-semibold text-white">ChatApp</p>
+                <p className="text-sm text-slate-400">
+                  {selectedWorkspace?.name || "No workspace selected"}
                 </p>
               </div>
+            </div>
 
-              <div className="mt-6">
-                <p className="mb-3 text-xs uppercase tracking-[0.3em] text-slate-400">Create workspace</p>
-                <div className="flex gap-2">
-                  <input
-                    value={workspaceName}
-                    onChange={(event) => setWorkspaceName(event.target.value)}
-                    placeholder="Research workspace"
-                    className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/50 focus:bg-white/10"
-                  />
+            <nav className="flex flex-wrap gap-2">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = activePage === item.id;
+
+                return (
                   <button
+                    key={item.id}
                     type="button"
-                    onClick={() => void handleCreateWorkspace()}
-                    disabled={isCreatingWorkspace}
-                    className="inline-flex items-center gap-2 rounded-2xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => setActivePage(item.id)}
+                    className={`inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm transition ${
+                      isActive
+                        ? "bg-cyan-400 text-slate-950"
+                        : "border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10"
+                    }`}
                   >
-                    <Plus className="h-4 w-4" />
-                    Add
+                    <Icon className="h-4 w-4" />
+                    {item.label}
                   </button>
-                </div>
-              </div>
+                );
+              })}
+            </nav>
 
-              <div className="mt-6 space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Workspaces</p>
-                  <FolderKanban className="h-4 w-4 text-slate-500" />
-                </div>
-                <div className="space-y-2">
-                  {workspaces.map((workspace) => {
-                    const isActive = workspace.id === selectedWorkspaceId;
-                    return (
-                      <button
-                        key={workspace.id}
-                        type="button"
-                        onClick={() => setSelectedWorkspaceId(workspace.id)}
-                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
-                          isActive
-                            ? "border-cyan-300/40 bg-cyan-300/12 text-white shadow-lg shadow-cyan-950/30"
-                            : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
-                        }`}
-                      >
-                        <p className="font-medium">{workspace.name}</p>
-                        <p className="mt-1 text-xs text-slate-400">
-                          {workspace.description || "Workspace for cross-document reasoning"}
-                        </p>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="mt-6">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Documents</p>
-                  <FileUp className="h-4 w-4 text-slate-500" />
-                </div>
-                <label className="mt-3 flex cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-cyan-300/35 bg-white/5 px-4 py-4 text-sm text-slate-200 transition hover:bg-white/10">
-                  {isUploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
-                  Upload PDF, DOCX, CSV, XLSX, TXT or image
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.csv,.xlsx,.xls"
-                    onChange={(event) => void handleUpload(event)}
-                    className="hidden"
-                  />
-                </label>
-                <div className="mt-3 space-y-2">
-                  {activeTask && (
-                    <div className="rounded-2xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-medium text-white">
-                          {activeTask.status === "SUCCEEDED" ? "Indexing complete" : "Indexing in progress"}
-                        </p>
-                        <p className="text-xs uppercase tracking-[0.2em] text-cyan-100/80">
-                          {activeTask.progress}%
-                        </p>
-                      </div>
-                      <p className="mt-2 text-sm text-cyan-50/80">
-                        {activeTask.phase}
-                      </p>
-                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-900/70">
-                        <div
-                          className={`h-full rounded-full ${
-                            activeTask.status === "FAILED" ? "bg-rose-400" : "bg-cyan-300"
-                          }`}
-                          style={{ width: `${Math.max(6, activeTask.progress || 0)}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                  {documents.map((document) => {
-                    const isSelected = document.id === selectedDocumentId;
-                    return (
-                      <button
-                        key={document.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedDocumentId(document.id);
-                          setViewerPage(1);
-                        }}
-                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
-                          isSelected
-                            ? "border-sky-400/50 bg-sky-400/12 text-white"
-                            : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="truncate font-medium">{document.name}</p>
-                          <span
-                            className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${
-                              document.status === "READY"
-                                ? "bg-emerald-400/15 text-emerald-200"
-                                : document.status === "FAILED"
-                                  ? "bg-rose-400/15 text-rose-200"
-                                  : "bg-amber-400/15 text-amber-200"
-                            }`}
-                          >
-                            {document.status || "READY"}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-xs text-slate-400">
-                          {document.page_count} pages • {document.chunk_count} chunks
-                        </p>
-                      </button>
-                    );
-                  })}
-                  {!documents.length && (
-                    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-slate-400">
-                      No documents in this workspace yet.
-                    </div>
-                  )}
-                </div>
-              </div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300">
+              <DatabaseZap className="h-4 w-4 text-cyan-300" />
+              {statusText}
             </div>
-
-            {sidebarCollapsed && (
-              <div className="mt-8 flex flex-1 flex-col items-center gap-4">
-                <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 p-3">
-                  <BrainCircuit className="h-5 w-5 text-cyan-300" />
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                  <FolderKanban className="h-5 w-5 text-slate-300" />
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                  <FileUp className="h-5 w-5 text-slate-300" />
-                </div>
-              </div>
-            )}
           </div>
-        </aside>
+        </header>
 
-        <main className="grid flex-1 gap-4 lg:grid-cols-[1.12fr_0.88fr]">
-          <section className="rounded-[2rem] border border-white/10 bg-slate-950/45 p-5 shadow-2xl shadow-slate-950/40 backdrop-blur-xl">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.35em] text-slate-400">Evidence viewer</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">
-                  {selectedDocument ? selectedDocument.name : "Select a document"}
-                </h2>
-              </div>
-              <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300">
-                Page {viewerPage}
-              </div>
-            </div>
-
-            <div className="mt-5 grid gap-4 xl:grid-cols-[1fr_320px]">
-              <div className="min-h-[560px] overflow-hidden rounded-[1.75rem] border border-white/10 bg-slate-900/80">
-                {selectedDocument?.mime_type?.includes("pdf") ? (
-                  <iframe
-                    title="Document viewer"
-                    src={`${API_BASE_URL}/documents/${selectedDocument.id}/content#page=${viewerPage}`}
-                    className="h-[560px] w-full bg-white"
-                  />
-                ) : selectedDocument ? (
-                  <div className="flex h-[560px] flex-col justify-between p-8">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Document preview</p>
-                      <h3 className="mt-3 text-3xl font-semibold text-white">{selectedDocument.name}</h3>
-                      <p className="mt-4 max-w-xl text-sm leading-7 text-slate-300">
-                        This file is indexed and searchable in the current workspace. PDF page navigation is available
-                        for PDF assets, while structured files can still be cited and queried from the chat panel.
-                      </p>
-                    </div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-                        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Chunks</p>
-                        <p className="mt-2 text-3xl font-semibold text-white">{selectedDocument.chunk_count}</p>
-                      </div>
-                      <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-                        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Pages</p>
-                        <p className="mt-2 text-3xl font-semibold text-white">{selectedDocument.page_count}</p>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex h-[560px] items-center justify-center text-center text-slate-400">
-                    Upload a document to unlock split-screen retrieval, citations, and page jumps.
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-4">
-                <div className="rounded-[1.75rem] border border-cyan-300/15 bg-cyan-400/10 p-5">
-                  <div className="flex items-center gap-3">
-                    <DatabaseZap className="h-5 w-5 text-cyan-300" />
-                    <p className="font-medium text-white">Workspace status</p>
-                  </div>
-                  <p className="mt-3 text-sm leading-7 text-cyan-50/80">{statusText}</p>
-                </div>
-
-                <div className="rounded-[1.75rem] border border-white/10 bg-white/5 p-5">
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Active context</p>
-                  <p className="mt-3 text-lg font-medium text-white">
-                    {selectedWorkspace?.name || "No workspace selected"}
-                  </p>
-                  <p className="mt-2 text-sm leading-7 text-slate-300">
-                    {selectedWorkspace?.description || "Create or select a workspace to group multiple sources together."}
-                  </p>
-                </div>
-
-                <div className="rounded-[1.75rem] border border-white/10 bg-white/5 p-5">
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Prompt ideas</p>
-                  <div className="mt-4 flex flex-col gap-2">
-                    {[
-                      "Compare the main arguments across all uploaded sources.",
-                      "Summarize the document and cite the strongest evidence.",
-                      "Extract any numeric trends or structured observations.",
-                    ].map((prompt) => (
-                      <button
-                        key={prompt}
-                        type="button"
-                        onClick={() => setMessageInput(prompt)}
-                        className="rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-slate-900"
-                      >
-                        {prompt}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="flex min-h-[800px] flex-col rounded-[2rem] border border-white/10 bg-slate-950/55 p-5 shadow-2xl shadow-cyan-950/20 backdrop-blur-xl">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.35em] text-slate-400">Conversation</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">Source-grounded chat</h2>
-              </div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300">
-                <MessageSquareText className="h-4 w-4" />
-                {selectedWorkspace?.name || "Waiting"}
-              </div>
-            </div>
-
-            <div className="mt-5 flex-1 space-y-4 overflow-y-auto pr-2">
-              {!messages.length && (
-                <div className="rounded-[1.75rem] border border-dashed border-white/10 bg-white/5 p-8 text-center text-slate-400">
-                  Start with a question once a workspace and document are selected.
-                </div>
-              )}
-
-              {messages.map((message) => (
-                <article
-                  key={message.id}
-                  className={`rounded-[1.75rem] border p-5 ${
-                    message.role === "user"
-                      ? "ml-12 border-cyan-400/20 bg-cyan-400/12 text-white"
-                      : "mr-6 border-white/10 bg-white/5 text-slate-100"
-                  }`}
-                >
-                  <div className="mb-4 flex items-center gap-3">
-                    <div
-                      className={`grid h-10 w-10 place-items-center rounded-2xl ${
-                        message.role === "user" ? "bg-cyan-400 text-slate-950" : "bg-white/10 text-white"
-                      }`}
-                    >
-                      {message.role === "user" ? <ArrowUp className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
-                    </div>
-                    <div>
-                      <p className="font-medium">{message.role === "user" ? "You" : "NexusRAG"}</p>
-                      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                        {message.streaming ? "Streaming" : "Ready"}
-                      </p>
-                    </div>
-                  </div>
-
-                  {message.role === "assistant" ? (
-                    <div className="max-w-none text-sm leading-7 text-slate-200">
-                      <MarkdownMessage>{message.content || "Thinking through the answer..."}</MarkdownMessage>
-                    </div>
-                  ) : (
-                    <p className="whitespace-pre-wrap text-slate-50">{message.content}</p>
-                  )}
-
-                  {!!message.citations?.length && (
-                    <div className="mt-5 flex flex-wrap gap-2">
-                      {message.citations.map((citation, index) => (
-                        <button
-                          key={`${message.id}-${index}`}
-                          type="button"
-                          onClick={() => jumpToCitation(citation)}
-                          className="rounded-full border border-sky-300/30 bg-sky-400/10 px-3 py-1.5 text-xs font-medium text-sky-100 transition hover:bg-sky-400/20"
-                        >
-                          Source {index + 1} • Page {citation.page_start}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </article>
-              ))}
-              <div ref={chatEndRef} />
-            </div>
-
-            <div className="mt-5 rounded-[1.75rem] border border-white/10 bg-slate-900/80 p-3">
-              <div className="flex gap-3">
-                <textarea
-                  value={messageInput}
-                  onChange={(event) => setMessageInput(event.target.value)}
-                  onKeyDown={handleMessageKeyDown}
-                  placeholder="Ask across the workspace, request a summary, or inspect a cited source..."
-                  className="min-h-[92px] flex-1 resize-none rounded-[1.25rem] border border-white/10 bg-white/5 px-4 py-4 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:bg-white/10"
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleSendMessage()}
-                  disabled={!messageInput.trim() || isStreaming}
-                  className="inline-flex w-16 items-center justify-center rounded-[1.25rem] bg-cyan-400 text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isStreaming ? <LoaderCircle className="h-5 w-5 animate-spin" /> : <ArrowUp className="h-5 w-5" />}
-                </button>
-              </div>
-            </div>
-          </section>
-        </main>
+        {renderPage()}
       </div>
     </div>
   );
