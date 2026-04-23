@@ -1,0 +1,121 @@
+# ================================================================
+# PYTHON / FASTAPI BACKEND
+# ================================================================
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Local environment files and API keys
+*.env
+.env.local
+.env.*.local
+
+# FastAPI / Uvicorn logs
+*.log
+*.pid
+
+# Database and SQLite cache
+*.db
+*.sqlite3
+talktonic.db
+
+# Model cache and embeddings
+.cache/
+.huggingface/
+torch_cache/
+~/.cache/
+sentence_transformers/
+faiss_index.bin
+*.npy
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# ================================================================
+# FRONTEND (React)
+# ================================================================
+
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Build output
+build/
+dist/
+.cache/
+coverage/
+.DS_Store
+
+# Local environment and secrets
+.env.development.local
+.env.test.local
+.env.production.local
+
+# React editor configs
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ================================================================
+# SYSTEM / OS FILES
+# ================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# ================================================================
+# PROJECT-SPECIFIC IGNORE
+# ================================================================
+
+# Uploads and temporary files
+uploads/
+tmp/
+__temp__/
+__trash__/
+
+# API keys and sensitive files
+groq_api_key.txt
+credentials.json
+
+# Python notebook checkpoints
+.ipynb_checkpoints/
+
+# Frontend build artifacts
+frontend_build/
+frontend/dist/
+frontend/node_modules/
+
+# ================================================================
+# END OF FILE
+# ================================================================
